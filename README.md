@@ -7,8 +7,10 @@ population holding bachelor’s degrees, larger share of white population and mo
 the share of votes for the Republican Party. Based on the models’ R-squared, we found that the results from the second linear 
 regression model and the random forest are valid, while the outcome from the first regression model and the regression tree is not.
 
-1. The files "regression_data_v4.csv", "Variables_v9_raw.csv", the folder "Geospatial Data" and the markdown document need to be in one folder
+1. The files "regression_data_v4.csv", "Variables_v9_raw.csv", the folder "Geospatial Data" and the markdown document need to be in the same folder
 3. Set the working directory in R to that folder
-4. Install Packages knitr and rmarkdown, as well as dependencies
+4. Install packages "knitr" and "rmarkdown", as well as dependencies
 5. Install all packages specified in the markdown document
 6. Run the model.  
+
+If you have any questions, add our wechat accounts! You find us in the class wechat group
