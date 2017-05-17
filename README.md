@@ -11,7 +11,7 @@ Find the published document on Rpubs: http://rpubs.com/JohanSt_R/277762
 
 The goal of this github page is to make our research reproducible. Please feel free to play with the data and the models and suggest improvements! To import the data and the report into R, please follow these steps:
 
-1. The files "regression_data_v4.csv", "Variables_v9_raw.csv", the folder "Geospatial Data" and the markdown document need to be in the same folder
+1. The files "regression_data_v4.csv", "Variables_v9_raw.csv", the folder "Geospatial Data" and the markdown document "	groupwork_markdown_v11.Rmd" need to be in the same folder
 3. Set the working directory in R to that folder
 4. Install packages "knitr" and "rmarkdown", as well as dependencies
 5. Install all packages specified in the markdown document
