@@ -1,0 +1,1258 @@
+---
+title: "Presidential Election"
+author: "Pirates of R"
+date: "5/11/2017"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Please see find the data we used: https://github.com/piratesofR/2016-Presidential-Election
+
+#Abstract  
+
+This study uses supervised machine learning models to explain the share of votes for the Republican Party in the 2016 Presidential Elections with demographic data on county level. The data comes mainly from the U.S. Census Bureau. Using campaign promises and media coverage on election demographics, we developed 11 hypotheses, which we tested on two linear regression models, a regression tree and a random forest. We found that lower population density, higher percentage of the population holding bachelor’s degrees, larger share of white population and more workers in labor-intensive industries increase the share of votes for the Republican Party. Based on the models’ R-squared, we found that the results from the second linear regression model and the random forest are valid, while the outcome from the first regression model and the regression tree is not.  
+
+#Setting up the model and the data
+
+Initialize libraries:
+```{r, message=FALSE, error=FALSE}
+#Libraries needed for the model
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(randomForest)
+library(boot)
+#Libraries needed for mapping and plotting
+library(sp)
+library(ggplot2)
+library(rgeos)
+library(rgdal)
+library(maptools)
+library(RColorBrewer)
+library(reshape)
+library(mapproj)
+library(knitr)
+library(kableExtra)
+library(texreg)
+```
+
+Creating the datafiles for the model. We divide the data into a training set (80%) and a testing set (20%). All models are built with the training set and tested on the testing set. The code is hidden here, but can be found in the appendix.
+```{r, echo=FALSE}
+#Importing data
+groupwork <- read.csv("regression_data_v4.csv",header = T)
+rownames(groupwork) <- groupwork$FIPS
+county_reg_data <- groupwork[,3:42]
+rownames(county_reg_data) <- groupwork$FIPS
+variables <- read.csv("Variables_v9_raw.csv")
+#Divide data in training and testing data
+set.seed(8888)
+train.index <- createDataPartition(county_reg_data$votes.republicans.per, p=0.8,list=FALSE)
+train <- county_reg_data[train.index,]
+test <- county_reg_data[-train.index,]
+```
+
+We also create the datafiles needed for plotting. The code is hidden here, but can be found in the appendix.
+```{r, echo=FALSE}
+#Adding leading zeros to the FIPS code
+gw_plotting <- groupwork
+gw_plotting$FIPS <- formatC(groupwork$FIPS, width = 5, format = "d", flag = "0")
+
+#For technical reasons
+gw_plotting$democrat.vote <- 1-gw_plotting$votes.republicans.per
+
+#Making the demographic data ready for merger with the spatial data
+gw_plotting$county <- tolower(gw_plotting$county)
+colnames(gw_plotting)[1] <- "fips"
+colnames(gw_plotting)[2] <- "county_name"
+gw_plotting$state <- state.abb[match(gw_plotting$state,state.name)]
+
+us.county.map <- readOGR(dsn="Geospatial\ Data", layer = "cb_2015_us_county_500k", verbose = FALSE)
+# convert the GEOID to a character
+us.county.map@data$GEOID<-as.character(us.county.map@data$GEOID)
+us.county.map <- us.county.map[!us.county.map$STATEFP %in% c("02", "15", "72", "66", "78", "60", "69","64", "68", "70", "74", "81", "84", "86", "87", "89", "71", "76", "95", "79"),]
+county_map <- fortify(us.county.map, region="GEOID")
+```
+
+#The Story
+Donald Trump being elected as the most powerful man on earth has been a surprise to many people all around the world, especially with a strong oppositional candidate like Hilary Clinton, who, in contrary to Trump, is an experienced politician and was the first woman running for president in the history of the U.S. The high percentage of republican voters came as a surprise to the public. It is still a widely discussed controversial topic in the media and among people from every corner of the globe. According to some newspaper articles we found, this turnout was influenced by numerous demographic factors, which we will try to measure in this report.
+
+We chose this topic due to the broad interest and awareness among the people towards it; moreover, it would be interesting to see what factors control such an important event. Our aim was to surpass the surface of this topic and inspect more deeper aspects, as well as to analyze what factors influenced the elections and how the republican candidate Donald Trump was elected. There is a big amount of data accessible, which made our analysis more accurate, detailed and also convenient. Most of the data we have gathered are of high quality and were obtained from official sources, such as the U.S. Census Bureau and U.S. Religion Census, etc.  We have established 11 hypotheses based on our previous knowledge about the elections. According to our hypotheses, we have chosen and set the variables based on what we personally found relevant and important, which could have lead to the election's success. We tried to confirm our hypotheses using these variables with statistical proof and have collected results accordingly.
+
+Below is the plot of the election outcome (popular vote). Red represents a share of more than 50% for the republican party, while blue represents a share of more than 50% for the democratic party.   
+```{r share of republican and democratic votes, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$democrat.vote),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdBu")), name="Republican Votes")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 1: Share of democratic vote") +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+```
+
+We failed to obtain recent data regarding crime on county-level. Crime data is usually not produced on county-level, but in police precincts, and it would have been very cumbersome to transform it to county-level data. The National Archive of Criminal Justice Data provided such data in the past, but at the moment only data for 2011 is available. We consider 2011 as too far away from the 2016 election; it was one year before Obama was elected for his second term. Trump has been frequently expressing (false) comments about recent rises in crime rates, so it would have been important to obtain recent crime data, but unfortunately it was unavailable. Therefore, no crime data was considered.
+
+####Hypothesis 1
+Counties with a higher population of over 65 year-olds are more likely to vote for Trump. 
+Seniors in general are more likely to vote for conservative parties; older generations of voters who were brought up under different circumstances could have different voting results compared to younger voters due to different priorities.  
+
+```{r percentage of population over 65 years old, echo=FALSE, warning=FALSE}
+age_data <- gw_plotting %>% 
+  dplyr::select(fips, age.o65y.per)%>%
+  mutate(age.o65y.per=replace(age.o65y.per, age.o65y.per>=0.4, 0.4)) %>% as.data.frame()
+
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=age_data, map=county_map, aes_string(map_id="fips", fill=age_data$age.o65y.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdPu")), name="Age over 65 years")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  labs(title = "Plot 2: Percentage of population over 65 years old",
+       subtitle = "One outlier removed") +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12),
+        plot.subtitle = element_text(hjust=0.5))
+```
+
+####Hypothesis 2
+Gender plays an important role in elections. Counties with a higher male population are more likely to vote for Donald Trump, while Hillary Clinton as the first female Presidential Nominee could have enticed more female voters. Donald Trump's "locker room talk" scandal and accusations of sexual abuse could repulse female voters.  
+
+```{r number of males per 100 females, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$males.100.females.ratio),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="PuRd")), name="Number of males per 100 females")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 3: Ratio of males per 100 females")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+```
+
+####Hypothesis 3
+Counties with a higher White-race ratio are more likely to vote for Donald Trump due to his endorsement from several right-wing extremists, Neonazis and alt-right leaders. His strong anti-immigration attitude catered to the fears of the White population; he made several racist remarks against Black people, Latinos and China. Therefore, minorities are unlikely to vote for him.  
+
+```{r percentage of white population alone, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$race.white.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="PiYG")), name="Race White Percentage")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 4: Percentage of white population only")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+         plot.title = element_text(hjust=0.5, size=12))
+```
+
+####Hypothesis 4
+Counties with a higher percentage of higher academic status are less likely to vote for Trump while counties with a higher percentage of lower academic status are more likely to vote for Trump. Thus, education level also played a crucial part in voting choice. Trump frequently insulted intellectual elites and deemed business success more important than education. We measure education by dividing it into two levels: percentage of people holding only a high school degree, and percentage of people holding a bachelors degree or higher.  
+
+```{r Percentage of high school degree holders in US counties, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$edu.o25y.high.school.grad.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="YlGnBu")), name="Highschool Degrees Percentage")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 5: Percentage of high school degree holders in US counties") +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+         plot.title = element_text(hjust=0.5, size=12))
+```
+
+####Hypothesis 5
+Counties with a lower population density rate are more likely to vote for Donald Trump. Counties with lower population density characterize with countryside, while counties with higher population density characterize with bigger and more metropolitan cities. Donald Trump characterized the American countryside as being subjugated by the metropolitan cities and their elites. Additionally, people in the countryside are generally more conservative than in larger cities. We measure population density as total population, number of people per square mile and number of housing units per square mile.  
+
+```{r Population density in US counties, echo=FALSE, warning=FALSE}
+pop_den_data <- gw_plotting %>% 
+  dplyr::select(fips, geo.density.population.ratio)%>%
+  mutate(geo.density.population.ratio=replace(geo.density.population.ratio, geo.density.population.ratio>=2500, 2500)) %>% as.data.frame()
+
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=pop_den_data, map=county_map, aes_string(map_id="fips", fill=pop_den_data$geo.density.population.ratio),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdPu")), name="Population Density")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  labs(title = "Plot 6: Population density in US counties",
+       subtitle = "All values above 2500 truncated. Some values reached 60 000, which made the dataset unsuitable for plotting") +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12),
+        plot.subtitle=element_text(hjust = 0.5))
+```
+
+####Hypothesis 6
+Economically disadvantaged counties are more likely to vote for Donald Trump. Poor areas are especially prone to crime and drug abuse, and Trump promised to solve these problems. Another reason is that economically disadvantaged people are usually less educated. Trump often promised to "drain the swamp" - to eliminate corruption. Therefore, wealthy people are less likely to vote for him. His promises of reindustrialisation, establishing trade barriers and terminating free trade agreements are likely to entice unemployed voters. He promised that the economy will grow tremendously if he is elected, which will also benefit unemployed voters. We measure this by median income, unemployment rate, poverty rate, number of people with social security, percentage of vacant housing units and number of people with disability.   
+
+```{r Income median in US counties, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$income.median.est),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdPu")), name="Income Median")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 7: Income median in US counties")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+```
+
+####Hypothesis 7
+Counties with strong manufacturing, natural resources, transportation and other manual labour related industries are more likely to vote for Donald Trump, and  private workers are also more likely to vote for him. His pro-business attitude, promises of reindustrialization and cutting off trade links are more likely to please people working in manual labour related industries. Donald Trump promised to allow pipeline projects that were blocked by Barack Obama and to loosen regulation on oil dwelling in the Gulf of Mexico. Private workers and self-employed workers are more likely to vote for him than government workers because he wanted to boost the economy while cutting back on government activities.  
+
+```{r US county population percentage in labor fields, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$work.occupation.natural.ressources.construction.maintenance.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdPu")), name="Percentage of population working in natural ressources, construction and maintenance")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 8: US country population percentage in labor intensive industries")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+```
+
+
+####Hypothesis 8
+Counties with more religious citizens are more likely to vote for Donald Trump. His opposal to reproductive rights and overall conservatism are the two main factors that explain his attractiveness to religious voters.  
+
+```{r Population percentage of major religions, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$rel.population.total.members.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="Reds")), name="Major Religions Members")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 9: Population percentage of major religions")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+```
+
+####Hypothesis 9
+Counties with lower percentage of immigrants are more likely to vote for Donald Trump. Research has shown that people with few or no contact with foreigners could have a higher chance of xenophobia. Donald Trump's anti-immigration and deportation policies will be more attractive to voters in counties with a low number of immigrants. We measure this with percentage of people born in a foreign country, percentage of foreigner residents born in Latin America, language spoken at home (English only) and percentage of people residing in the same county for over a year.   
+
+```{r Percentage of Latin American immigrants in US counties, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$foreign.born.place.latin.america.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="YlGn")), name="Population born in Latin American countries")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 10: Percentage of Latin American immigrants in US counties")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+```
+
+####Hypothesis 10
+Counties with a well-working healthcare system are less likely to vote for Donald Trump. Donald Trump portrayed the USA as being in a disastrous state. People living in a well-working healthcare system  and civil services are less likely to agree with his description. Donald Trump wants to dissolve Obamacare, therefore people ensured with Obamacare are less likely to vote for him. We measure the healthcare system by number of people with health insurance and number of general practitioners per 1000 people.   
+
+```{r Population percentage with health insurance in US counties, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$insurance.with.insurance.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="YlOrRd")), name="Percentage of population with health insurance")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 11: Population percentage with health insurance in US counties")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+```
+
+####Hypothesis 11
+Counties in states with a republican governor are more likely to vote for Trump than counties in states with an independent or democratic governor. Traditionally republican states (only presidential elections) are more likely to vote for him than traditionally democratic states or swing states. Some states have not changed their voting behaviour since the 1950's. Past voting behaviour is therefore likely to have a strong influence.   
+
+```{r Democratic, republican and swing states, echo=FALSE, warning=FALSE}
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$voting.behavior),color="#0e0e0e", size=0.15) +
+  scale_fill_manual(values = c("#ffffff", "#4393c3","#d6604d", "#b8e186"), name="Traditional voting behavior")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 12: Democratic, republican and swing states")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+```
+
+#Data
+
+###Datasets and origins
+
+Our data comes from 12 different datasets. The datasets "Age and Sex", "Eduational Attainment", "Housing Vacancy", "Race and Latino", "Economic Characteristics" and "Social Characteristics" stem from the U.S. Census Bureau, 2011-2015 American Community Survey 5-Year Estimates. The "Geography" data comes from the U.S. Census Bureau, 2010 Census and the "Spatial" data from the U.S. Census Bureau, MAF/TIGER database.  
+
+The "Religiosity" data comes from the Association of Religious Data Archives, U.S. Religion Census (2010). The "Health" data comes from the American Medical Association, AMA Health Workfore Mapper. The "Election" data is provided by user "tonmcg" on his github page. He scraped it from townhall.com. The "Political Voting" data is based on reports from Politico. Please see the Appendix for detailed references.  
+
+###Counties in the USA
+
+Some states in the USA have many counties, some few. Texas has 254 counties, while the District of Columbia counts as one county (the District of Columbia is not eligible to vote in federal elections anyways), Delaware has only three counties. Some counties are geographically very large, but sparesely populated. Other counties are small but densely populated. The differences between might influence the results of the analysis, but we still chose counties as level of analysis. They are the smallest unit of statistical analysis in the U.S. that comprehensively covers all of the U.S.. Cities are smaller, but not all territory of the U.S. is incorporated as city. Another advantage of counties is the abundance of data available.   
+
+###Missing Data
+
+The quality of the data is very high in general. The data from the U.S. Census Bureau is preprocessed and does not contain NAs for the datasets we used. At first, we also included a variable measuring teen pregnancies in the "Social Characteristics" dataset, but it had to be removed due to too many NAs. The "Religiosity" dataset depends on religious communities reporting their membership to the investigator. One county, Loving County in Texas, did not report any members of any major traditional religion. After a short investigation into the matter, we found out that Loving County has less than 100 inhabitants and the only church was put out of use years ago. It seemed plausible to set the membership to zero for all major traditions, because apparently no religious communities exist.   
+
+###Proportions
+
+We mostly selected data that is a percentage of the total county population. Some of the variables are ratios and only the total population, the median income and the family size are absoulte numbers. Using proportions instead of absoulte numbers makes comparing across counties of different sizes easier. Since election results like our dependent variable "Percentage of Votes for the Republican Party" are usually displayed as a proportion, using proportions for other variables reduces the need for data transformations.   
+
+###Different Years
+
+Most of the work in the data processing section was to join the different datasets. We used the "2011-2015 American Community Survey 5-Year Estimates" as a benchmark for county names and FIPS codes. All other data sets were then adapted to that standard. County names and FIPS codes changed over the years, so older datasets had to be fitted to the 2015 names. The "Geography" data uses the Census 2010 county names and FIPS codes. Since 2010, some counties (boroughs and census areas) in Alaska were merged or had changed names. The new values were calculated using means of the old counties. "Oglala Lakota County" in South Dakota was known as "Shannon County" until 2015. Few other countries were also merged using mean values.   
+
+###Variables used in the model
+  
+```{r, results='asis', echo=FALSE}
+knitr::kable(variables, format="html") %>%
+kable_styling(bootstrap_options = c("striped", "hover","responsive"))
+```
+
+###Preliminar investigation in the relationship between the variables
+
+Some of the variables are plotted against the share of votes for the Republican Party. The goal is to give some hints on possible linear or linear relationships between the independent variables and the dependent variable. For population density, race Asian, age over 65 years, bachelor degree or higher and religiosity, extreme outliers are removed.  
+
+```{r scatter plot variables, echo=FALSE, warning=FALSE, dpi=300}
+#Put all variables needed in one dataframe
+reg_plot_df <- county_reg_data %>% 
+  dplyr::select(edu.o25y.high.school.grad.per, edu.o25y.bacherlor.or.higher.per, housing.units.vacant.per,race.white.per,race.asian.per,race.black.per, rel.population.total.members.per,work.occupation.natural.ressources.construction.maintenance.per,income.median.est,foreign.born.place.latin.america.per,geo.density.population.ratio, age.o65y.per, votes.republicans.per)%>%
+  filter(geo.density.population.ratio <= 7500 & race.asian.per <= 0.3 & age.o65y.per<=0.4 & edu.o25y.bacherlor.or.higher.per <= 0.7 & rel.population.total.members.per <= 1.4)
+
+#Create long data frame that contains all the information
+reg_plot_df.m<- melt(reg_plot_df,"votes.republicans.per")
+
+#Create shorter labels
+plot_labs <- c(
+                    `edu.o25y.high.school.grad.per` = "High School Degree",
+                    `edu.o25y.bacherlor.or.higher.per` = "Bachelor Degree",
+                    `housing.units.vacant.per` = "Vacant Houses",
+                    `race.white.per` = "Race White",
+                    `race.asian.per` = "Race Asian",
+                    `race.black.per` = "Race Black",
+                    `rel.population.total.members.per` = "Religiosity",
+                    `work.occupation.natural.ressources.construction.maintenance.per` = "Nat. Res. and Const.",
+                    `income.median.est` = "Income Median",
+                    `foreign.born.place.latin.america.per` = "Latin Americans",
+                    `geo.density.population.ratio` = "Population Density",
+                    `age.o65y.per` = "Age over 65 years",
+                    `votes.republicans.per` = "Votes for Rep. Party"
+                    )
+
+#Plot
+ggplot(reg_plot_df.m, aes(value, votes.republicans.per,colour = variable)) + 
+  geom_point(alpha = 0.3) +
+  ylim(0, 1) +
+  geom_smooth(method = "lm",color="black", se = FALSE, size = 0.5) +
+  facet_wrap(~ variable, scales = "free", labeller = as_labeller(plot_labs)) +
+  ggtitle("Plot 13: Relationship between variables and share of votes for Rep. Party") +
+  theme_bw() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+```
+
+There seems to be a weak linear relationship between high school degree and votes for the Republican Party. The trend is clearer for the share of people holding at least a bachelor's degree. The counties that have a share of people holding a bachelor's degree exceeding 30% are much less likely to votes for Trump. Vacant houses seem to slightly increase the share of votes for the GOP, but the relationship might be influenced by outliers. Counties with a small white population are very unlikely to vote for Trump, but counties with a large white population seem to be equally likely to vote and not to vote for him. The share of Asians is quite low in most counties. The less Asians are in a county, the higher the vote for Trump might be, though the relationship might be influenced by outliers. The picture is much clearer for the Black population. The higher the share of black people, the lower the share of votes for the Republican Party will be. There seems to be no trend in the Religiosity variable. The percentage of workers in natural resources, construction and maintenance also seems to exhibit a positive linear relationship with the share of votes for the GOP. The income meidan seems to not influence the share of votes for the Republican Party, it is merely a cloud
+with a biased tail. The share percentage of foreigners born in Latin America shows no signs of relationship with the percentage of votes for Donald Trump and the Republican Party. A higher share of people over 65 years seems to slightly raise the likelihood for a higher share of votes for the Republican Party.  
+
+This plot provides us with some insights that we can use later for interpreting the results of the models.  
+
+#Methodology
+
+At first sight, it seems logical to treat the results of the election as a classification problem: Either Trump gets more than 50% of the votes or less. But this is not true in the USA. Hillary Clinton won the popular vote (she received 2 million more votes than Trump), but Trump became President, because he won the electoral college.  
+
+Contrary to its apperance as Boolean variable, an election outcome is actually a continous variable. The share of votes for Donald Trump can lie everywhere between 0 and 1. Forcing group membership by saying "every county with more than 50% of votes for Donald Trump is classified as won by Trump and every county with less than 50% of votes for Donald Trump is classified as lost by Trump" means forcing a continous variable into being categorial. Such a forced transformation is likely to lead to loss of information. It's insignificant to the model if Trump won the county with 51% or 91%, it will classify both as "won". A logistics regression could account for the continous character of the response variable, but its goal also would be to determine group membership: Trump won or Trump lost. This study is not trying to predict who won in which counties, but which factors increased the share of votes for Donald Trump. Therefore, it uses regression methods: A complete generalized linear regression model, an improved generalized linear regression model, a regression tree and a random forest to investigate the factors that increased the republican party's share of votes.   
+
+The advantage of a linear regression model is that it is easy to handle, quite resistant to violations of linearity and it gives good prediction results that are also easy to interpret. It provides not only strength of effect, but also direction and significance. In R, the generalized linear regression function glm is able to account for group fixed effects that we experience with the state, the governor and the voting behavior variables, which is not possible with the standard linear regression function lm. The regression tree is very useful in visually investigating hierarchical relationships between the variables. Results must be treated carefully, because regression trees' predictive power is weak. A clustering algorithm also would have helped in visualizing the model, but clustering algorithm cluster observations, not explantory variables. With 3142 observations, a visual representation of such a cluster would be very crowded or, if we smooth it, lose information. The random forest eliminates many weaknesses of the regression tree by producing hundreds of trees instead of only one and then taking means, it provides more valid results. Random forests have very good predictive power, which matches the complete generalized linear regression model. However, the random forest results are harder to interpret than the linear regression results. The random forest only gives a variable importance index, which shows which variables were most important in reducing overall prediction variance. It does not provide us with direction effects, e.g. if the percentage of black people in a county increased or decreased the share of votes for the republican party, only that it had a strong influence.  
+
+#Models
+##Generalized linear regression model
+
+In the first step, we use the plm package to run a linear regression on all selected variables, because plm provides a convenient way to control for group fixed effects. We suspect that "state" causes a group fixed effect.  
+```{r}
+county.glm <- glm(formula = votes.republicans.per ~ log(total.population.est) + age.o65y.per + log(males.100.females.ratio) + edu.o25y.high.school.grad.per + edu.o25y.bacherlor.or.higher.per + housing.units.vacant.per + race.white.per + race.black.per + race.native.american.per + race.asian.per + race.pacific.per + race.other.per + race.latino.per + rel.population.total.members.per + work.laborforce.civilian.is.unemployed.per + work.occupation.management.business.science.arts.per + work.occupation.service.per +  work.occupation.sales.office.per + work.occupation.natural.ressources.construction.maintenance.per + work.occupation.production.transportation.per + work.class.of.worker.private.per + work.class.of.worker.gov.per + work.class.of.worker.self.employed.per +  log(income.median.est) + income.with.social.security.per + insurance.with.insurance.per + poverty.all.people.per + log(household.average.family.size.est) + disability.is.per + residence.1y.ago.same.county.per + place.of.birth.foreign.per + foreign.born.place.latin.america.per + language.spoken.at.home.english.only.per + log(geo.density.population.ratio) + log(geo.density.housing.ratio) + party.governor + voting.behavior + health.general.practicioner.per.1000.ratio + state, data = train)
+screenreg(county.glm, single.row = TRUE,custom.model.names = "Complete Linear Regression")
+```
+
+The default error family in the glm-function is Gaussian, so this is an ordinary linear regression where R-squared provides a good measure for goodness of fit. The glm-function does not report R-squared, but it can be calculated by 1 - (Residual Deviance/Null Deviance). It measures how much better the model is than just using an intercept (the null hypothesis). The R-squared for this model is 1-(11.963/76.669) = 0.8621085, which implies that it can explain around 86% of the variance in the share of votes for Republican Party in the training data. The squared correlation of predicted value and observed value in the testing data(R-squared):  
+
+```{r,warning=FALSE, echo=FALSE}
+reg.1.test.resp <- predict(county.glm, newdata = test[,-38], type = "response")
+cor(reg.1.test.resp,test[,38])^2
+```
+The model predicts 86,51% of the variance in testing data, but many variables are insignificant. We give a detailed account on which hypothese are confirmed and rejected in the discussion of the improved linear regression model.  
+
+We reduced the model to the more significant variables. This model is the result of many iterations of refinement. State and the different race variables have very large influence. Some variables seem to express the same meaning, as place.of.birth.foreign.per, place.of.birth.latin.america and language.spoken.at.home.english.only. We know from studying general demographic statistics that most foreigners in many states are from Latin America. Therefore, we only retain foreign.born.place.latin.america.per.   
+
+```{r}
+county.glm.2 <- glm(formula = votes.republicans.per ~ edu.o25y.high.school.grad.per + edu.o25y.bacherlor.or.higher.per + housing.units.vacant.per + race.white.per + race.asian.per + race.black.per + rel.population.total.members.per +  work.occupation.natural.ressources.construction.maintenance.per + log(income.median.est) + party.governor + voting.behavior + foreign.born.place.latin.america.per + log(geo.density.population.ratio) + state, data = train)
+screenreg(county.glm.2, single.row = TRUE, custom.model.names = "Improved Linear Regression")
+```
+The complete linear regression model resulted in many insignificant variables, therefore we reduced the model to the most significant variables. Some changes uncovered interesting relationships: The significance of religion and unemployment is much lower after controlling for state. The significance of family size and unemployment is much lower after controlling for African American population. The estimate for race.asian.per changes from negative to positive after controlling for education. A possible explanation is that Asian Americans more often enjoy higher education than the population average. Citizens who received higher education are much less likely to vote for Trump, so Asian Americans as a group also are less likely to vote for him. When we control for this effect, we see that districts with high Asian American percentage are more likely to vote for Trump than those with low Asian American population share.
+
+<b>Hypothesis 1</b>   
+We reject hypothesis 1, because the percentage of population over 65 years old variable was not significant in the first linear regression model and therefore was omitted in the second model. Counties with a higher population of over 65 years olds are not more likely to vote for Trump.  
+
+<b>Hypothesis 2</b>  
+We reject hypothesis 2, because the variable describing number of males per 100 females is insignificant and does not appear in model 2. Counties with higher male population are not more likely to vote for Donald Trump.  
+
+<b>Hypothesis 3</b>   
+We confirm hypothesis 3, because the variables describing race are highly significant with comparatively large estimates. The percentage of population race white is highly significant, positive and has the largest estimate of all variables. The percentage of population race black is highly significant and negative, which means that the larger the share of black/afro American in a county, the less votes Trump will get. Asian race variable is also significant in our model, it is positive and significant. This only partially contradicts our assumption that a higher share of non-white races decreases the shares of votes for Trump, because the Asian race variable is the only non-white race variable displaying such behavior. The high explanatory power of the white and black variables still allow us to strongly confirm hypothesis 3.
+
+<b>Hypothesis 4</b>   
+The education hypothesis is partially rejected and partially confirmed. It is rejected because a higher share of high school graduates moderately reduces the share of votes for the Republican Party. We expected that a higher share of high school graduates would increase the share of votes for the Republican Party. It is confirmed because a higher share of bachelor graduates strongly decreases the share of votes for the Republican party, just as we expected. We still see our hypothesis as confirmed, because the effect of the bachelor degree education is almost three times as strong as the effect for high school degree holders.
+
+<b>Hypothesis 5</b>   
+We confirm hypothesis 5, because the describing population density variable is highly significant and negative. This means that the higher the population density, the smaller the share of votes for Donald Trump. Although the housing density (housing per square meter) is not significant in the improved model, evidence for the population density variable is significant enough to confirm hypothesis 5.  
+
+<b>Hypothesis 6</b>  
+Hypothesis 6 is rejected, because the income median variable has a small, significant and positive estimate. This means that the higher the median household income is, the higher probability of counties voting for Trump, contrary to what we expected. Percentage of vacant housing units variable is significant and negative, which means that the higher the percentage of vacant housing units in county, the lower probability for county to vote for Trump, which also contradicts our assumptions. Other variables such as number of people with disability are insignificant in our model.
+
+<b>Hypothesis 7</b>    
+We confirm hypothesis 7, because the percentage of people employed in natural resources, construction and maintenance has a significant and positive influence on the share of votes for the Republican Party.  
+
+<b>Hypothesis 8</b>   
+Hypothesis 8 is rejected because the percentage of population being a member of a major religion variable proved to be insignificant. Counties with more religious citizens are not more likely to vote for Donald Trump.  
+
+<b>Hypothesis 9</b>   
+Hypothesis 9 is rejected. The percentage of Latin Americans in a county increases the share of votes for the republican party, contrary to what we expected, although the effect is very weak. The variables for percentage of residents born in foreign countries, language spoken at home English only and percentage of people residing in the same county for over a year are not significant.
+
+<b>Hypothesis 10</b>   
+We reject hypothesis 10 based on the fact that the variable describing the number of general practitioners per 1000 people is insignificant.  
+
+<b>Hypothesis 11</b>   
+Variables such as governors, party affiliation (Democratic, Republican, Independent) and previous voting behaviour (Democratic, Republican) are highly significant but the effects are not clear, therefore we have to reject hypothesis 11. Having a democratic, independent or republican governor all seem to decrease the share of votes for the Republican Party, which is contradictory. Similarly, being considered as traditionally voting for the Republican or Democratic Party both seem to increase the share of votes for the Republican Party in the 2016 presidential elections. It is likely that this election was less about party affiliation and more about the character of the candidates Hillary Clinton and Donald Trump, so past voting behavior had not much influence on the election outcome.
+
+The R-squared for this model is 1-(11.963/76.669) = 0.8439656, which means that it can explain about 84% of the variance in the share of votes for the GOP in the training data.
+
+Calculate the squared correlation of predicted value and observed value for the test data (R-squared):  
+```{r,echo=FALSE, warning=FALSE}
+reg.2.test.resp <- predict(county.glm.2, newdata = test[,-38], type = "response")
+cor(reg.2.test.resp,test[,38])^2
+```
+
+The model can explain around 84,86% of the variance in the test data. This is about the same as in the training data, which means that the model is not overfitted. It is slightly lower than in the original model.
+
+Comparing the linear regression models using anova with an F-test:  
+```{r, echo=FALSE}
+anova(county.glm, county.glm.2, test = "F")
+```
+
+We see that the original model is insignificant, but the improved model is highly significant, as indicated by the low p-value. We therefore only consider the improved model, even though the original model was able to explain a slightly higher percentage of the variance.
+
+##Regression Tree
+
+Fitting a regression tree. We use the rpart-package because of the great rpart.plot-package for visualization, which is the main purpose of a regression tree, since its results are inferior to linear regression or random forests. We also tried the tree-package and the results were actually the same. The state variable is excluded due to too many values (51). The number is 51 because the District of Columbia is included, which does not have statehood, but is treated like a state for statistical purposes.  
+
+```{r,echo=FALSE}
+tree.train <- train[,2:40]
+tree.con <- rpart.control(cp = 0.003)
+county.tree <- rpart(votes.republicans.per ~ ., control = tree.con, data = tree.train)
+printcp(county.tree)
+```
+
+We select CP = 0.0051159 with 19 splits and xerror = 0.29224 as reasonable comprise between minimal xerror and plotability to prune the tree. The cp-value with the actual minimum xerror is not plottable anymore. Plot of the pruned tree:  
+
+```{r, echo=FALSE}
+pruned.county.tree<-prune.rpart(county.tree,cp=0.0051159)
+rpart.plot(pruned.county.tree, uniform=T, box.palette = "Reds", main = "Plot 14: Pruned regression tree")
+```
+
+The regression tree splits the predictor space into several regions with a top-down algorithm called recursive binary splitting. This is fast and easy way to visualize and interpret, but the results are worse than those of other regression techniques. This is due to greedy algorithm. It does not consider which split would be optimal regarding a future tree, only which split is optimal at this particular step. At each step, we divide the tree into two sub-planes so that the combined variance for sub-plane 1 and 2 is minimized. The advantage of decision trees is that it can show hierarchical relationships between variables.
+
+The White-race variable is the most important predictor, as in the regression model. If the percentage of white people is above 64%, the predicted share of votes for the Republican Party increases from 45% to 67%. This confirms our hypothesis 3. The second most important predictor is bachelor's degree. If a state is considered as traditionally leaning towards the Democratic Party, counties in that state are less likely to vote for the Republican Party. This confirms hypothesis 11. Counties with a percentage of white people over 64% where less than 27% of the people hold a bachelor degree are predicted to vote for the Republican Party with 70% of the votes. If the percentage of bachelor degrees is above this threshold, the predicted share of votes is only 17%. The model does not include the high school degree variable, so the prediction that the percentage of high school degrees increases the share of votes for the republican party  is rejected, but we still regard hypothesis 4 as confirmed. If counties have a percentage of more than 14% working in natural resources, construction and maintenance, the GOP's share of the vote increases to 77%. 23% of counties fall in this predictor range. This confirms our hypothesis 7. If the percentage of white people is below 56%, the percentage of people working in natural resources, construction and maintenance over 11%, then the unemployment rate also plays a significant role in predicting the share of votes for the Republican Party, changing the votes from 48% to 65%. Therefore, hypothesis 6 is also confirmed.
+
+Hypotheses 1, 2, 8, 9 and 10 are rejected, because the age, sex, religiosity, immigration and healthcare system variables are not chosen for the model. If total population in a county exceeds 11 000, it significantly increases the share of votes for the Republican Party. This could confirm our hypothesis 5, but it is probably influenced by some outliers with very low population, so we reject hypothesis 5.
+
+The regression tree algorithm did not accept the state variable as input, which is a shortcoming of this model. This might be one of the reasons why the model explains a significantly lower percentage of the variance than the other models.
+
+Calculate the squared correlation of predicted value and observed value for the test data (R-squared):  
+
+```{r, echo=FALSE}
+tree.test <- test[,2:40]
+tree.test.resp <- predict(pruned.county.tree, tree.test)
+cor(tree.test.resp,test[,38])^2
+```
+
+The decision tree only explains about 66.01% of the variance in the model. The decision tree with cp=0.01 explained 63.85% of the variance in the model. This is a poor result, but the model is still helpful in visualizing the importance of certain variables.  
+
+##Random Forest Model
+
+We built a random forest, which is suitable to explain a non-binomial outcome and for large sample sizes.  
+
+Random forests build many decision trees from bootstrapped samples. A decision tree always chooses the strongest predictor, but the random forest algorithm chooses a random subset of variables to perform the splits, which results in many uncorrelated trees. This leads to a greater reduction in variance and improves our model greatly. A shortcoming of the random forest is that it does not show us the direction of the relationship between the dependent and independent variable. All our hypotheses contain directions, so we cannot use the random forest model to directly confirm them. However, it gives us valuable hints on relationships, which we can interpret in combination with the linear regression models and the regression tree model.
+
+```{r, echo=FALSE}
+county.2.rf <- randomForest(train$votes.republicans.per~.,data = train)
+print(county.2.rf)
+importance(county.2.rf)
+```
+
+The model can explain 83,93% of variance in the republican votes share in the training data. We also ran a principal components analysis on the data and then built a random forest on top of it, but that model could only explain 79% of the variance and it greatly lost in interpretability, because only the first principal components could be interpreted, while there were difficulties with the latter ones. Therefore, the principlal components model was discarded.  
+
+```{r, echo=FALSE}
+varImpPlot(county.2.rf, main = "Plot 15: Variables Importance Plot", pch = 20)
+```
+
+We consider only variables with node importance larger than one as important. The model considers state as the most important variable. This means that there are strong group fixed effects influencing the election result. We tried to reduce this effect by introducing hypothesis 11 and the voting behavior and governor variables, but the effect still stayed strong. The second most important variable is the share of white people in a county, which might confirm hypothesis 3. Also, the share of Asian and Black peope are important in the model, which also supports hypothesis 3. The third most important variable is the number of people with bachelor degree or higher, which might confirm hypothesis 4. The share of people with high school degree also plays a certain role, further supporting the education hypothesis. The fourth most important variable is the percentage of the population working in natural resources, construction and maintenance industries, which indicates evidence for hypothesis 7. The population density and the total population estimate also have variable importance larger than one, which might confirm hypothesis 5. The traditional voting behavior also is one of the more important variables, which offers rather weak evidence for hypothesis 11.
+
+Hypothesis 1, 2, 6, 8, 9 and 10 are rejected, because the variables for age, sex, economic disadvantage, religiosity, immigration and healthcare system are not important in the model.
+
+The mean difference between predicted value and actual election outcome and R-squared, as calculated for the other models:  
+
+```{r, echo=FALSE}
+test.rf.resp <- predict(county.2.rf, newdata = test[,-38])
+comparison <-  data.frame(Republican.Vote = test$votes.republicans.per, Fitted.Republican.Vote = test.rf.resp, Prediction.Error = test$votes.republicans.per-test.rf.resp, R.squared = cor(test.rf.resp,test[,38])^2)
+mean(abs(comparison$Prediction.Error))
+mean(comparison$R.squared)
+```
+
+The difference between the predicted value from the actual election outcome is 4,53% and the model can explain around 86,83% of the variation in the testing data. This is about the same as the first regression model, 2% more than the second regression model and 20% more than the regression tree.  
+
+Ten largest prediction errors:  
+```{r, echo=FALSE}
+comparison.sort <- comparison[order(-abs(comparison$Prediction.Error)),]
+head(comparison.sort,10)
+```
+Some counties have quite large prediction errors. In these cases the model fails to explain the election result. FIPS=48301 is Loving County in Texas, which is the county in the USA with the lowest population density. It has a total population of only 117.  
+
+The model is useful to determine the variables' importance in predicting the election results, but it does not provide us with directions of the variables. We also do not know about the significance of the findings. Also, state is the most important variable.  
+
+##Model Comparison  
+
+#####Percent of variance explained
+
+Squared correlation, often R-squared, explained the percent of variance. We use it to assess the performance of our models on the test data, comparing actual election results and results predicted by the model. The complete regression model predicts 86.51% of the variance in the testing data, but many variables are insignificant. The improved linear regression model can explain around 84.86% of the variance in the test data, which is slightly lower than in the original model. The regression tree model only explains about 66.01% of the variance in the testing data, which is about 20% less than all other models. The random forest can explain around 86.83% of the variation in the testing data. This is about the same as the regression models and significantly better than the regression tree. Therefore, we consider the regression models and the random forest equal and use the regression tree only for visualization of hierarchical relationships, but not for prediction.
+
+#####Visualization of prediction quality
+We plot the actual value for share of votes for Republican Party against the predictions from the four different models. These plots can graphically explain the differences in R-squared between the models. Each dot represents one county. Ideally, all predicted values would lie on the black regression line.  
+
+```{r, echo=FALSE}
+#Prepare the data
+res.plot <- data.frame(matrix(NA,nrow = 2515))
+res.plot$rep.vote <- train$votes.republicans.per
+res.plot$GLM1.pre <- predict(county.glm)
+res.plot$GLM2.pre <- predict(county.glm.2)
+res.plot$RT.pre <- predict(pruned.county.tree)
+res.plot$RF.pre <- predict(county.2.rf)
+res.plot <- res.plot[,2:6]
+
+#create long dataframe
+res.plot.m<- melt(res.plot,"rep.vote")
+
+#variable names
+res.plot.labs <- c(
+  `rep.vote` = "Votes Rep. Party",
+  `GLM1.pre` = "GLM1 Prediction",
+  `GLM2.pre` = "GLM2 Prediction",
+  `RT.pre` = "RT Prediction",
+  `RF.pre` = "RF Prediction"
+)
+
+#plot
+ggplot(res.plot.m, aes(rep.vote, value, colour = variable)) + 
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm",color="black", se = FALSE, size = 0.5) +
+  scale_color_manual(name  ="Model", labels=res.plot.labs, values=c("#ff7f00", "#1f78b4", "#c51b7d", "#7fbc41")) +
+  ylim(0, 1) +
+  ggtitle("Plot 16: Predictions against actual value as in one plot") +
+  theme_bw()
+```
+
+The regression tree model has the largest inaccuracy in predicting the election outcome. The spread of the complete regression model (GLM1) also seems to be slightly larger than that of the improved/ reduced regression model (GLM2). The random forest seems to have highest accuracy, the values it predicted seem to lie closest to the regression line. These plots mirror the R-squared values, which are calculated using the squared correlation of predicted value and observed value. Therefore, we restate that the two regression models and the random forest have a similar goodness of fit, while the random tree model has a significantly lower goodness of fit.
+
+We also plot the predictions against the observed value in four separate plots:  
+
+```{r, echo=FALSE}
+#variable names
+res.plot.labs <- c(
+  `rep.vote` = "Votes Rep. Party",
+  `GLM1.pre` = "GLM1 Prediction",
+  `GLM2.pre` = "GLM2 Prediction",
+  `RT.pre` = "RT Prediction",
+  `RF.pre` = "RF Prediction"
+)
+#plot
+ggplot(res.plot.m, aes(rep.vote, value, colour = variable)) + 
+  geom_point(alpha = .3) +
+  ylim(0, 1) +
+  geom_smooth(method = "lm",color="black", se = FALSE, size = 0.5) +
+  facet_wrap(~ variable, scales = "free", labeller = as_labeller(res.plot.labs)) +
+  scale_color_manual(name  ="Model", values=c("#ff7f00", "#1f78b4", "#c51b7d", "#7fbc41")) +
+  ggtitle("Plot 17: Predictions against actual value in separate plots") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+
+#Conclusion
+
+|              |  Improved GLM|  Regression Tree|  Random Forest|
+|-------------:|-------------:|----------------:|--------------:|
+|  Hypothesis 1|        Reject|           Reject|         Reject|
+|  Hypothesis 2|        Reject|           Reject|         Reject|
+|  Hypothesis 3|       Confirm|          Confirm|        Confirm|
+|  Hypothesis 4|Reject/Confirm|          Confirm|        Confirm|
+|  Hypothesis 5|       Confirm|           Reject|        Confirm|
+|  Hypothesis 6|        Reject|          Confirm|         Reject|
+|  Hypothesis 7|       Confirm|          Confirm|        Confirm|
+|  Hypothesis 8|        Reject|           Reject|         Reject|
+|  Hypothesis 9|        Reject|           Reject|         Reject|
+| Hypothesis 10|        Reject|           Reject|         Reject|
+| Hypothesis 11|        Reject|          Confirm|         Reject|
+
+This table is compiled based on the results from the different models. The F-test showed that the complete linear regression model was not significant, so we did not include its results here. In case of conflict between regression tree on the one hand and GLM/random forest on the other hand, we use the GLM/random forest results as standard, because the predictive power of the regression tree is rather weak. 
+
+Hypothesis 1 (age), 2 (sex), 8 (religiosity), 9 (immigration), 10 (health care system) are rejected in all models. Hypotheses 6 (economic disadvantage) and 11 (voting behavior) are confirmed in the regression tree model, but rejected in the GLM and random forest models, so we also rejected it.
+
+Hypothesis 4 (education) is partially rejected and partially confirmed in the linear regression model. We expected that the share of people with high school degree only would increase the share of votes for the republican party, while the share of people with bachelor's degree or higher would decrease the share of votes for the Republican Party. Contrary to our expectations, both variables strongly decreased the share of votes for the Republican Party, so the part on the high school degrees is rejected, the part on the bachelor'???'s degrees is confirmed. The random forest does not provide directions of the relationships, only variable importance. It confirms the importance of both variables. We therefore modify our hypothesis and say that even education below university level decreases the share of votes for the Republican Party in the 2016 Presidential Elections.
+
+Hypothesis 5 (population density) is rejected by the regression tree, but confirmed in the linear regression and the random forest, so we regard it as confirmed. The effect is significantly weaker than for the other variables. Hypotheses 3 (race) and 7 (share of workers in labor intensive industries) are confirmed in all models.
+
+Therefore, we can say that age, sex religiosity, health care system, economic disadvantage and voting behavior did not help explaining the election results. However, education population density, share of workers in labor intensive and race, especially share of white people, were important factors in determining the share of votes for the Republican Party. From the regression tree results we know that, especially counties with large white population, many uneducated people, and workers in labor intensive industries were likely to give a large share of their vote to the Republican Party and Donald Trump.
+
+##References
+
+#####Our Sources
+American Medical Association (2017): *General Practicioners*, in: AMA Health Workfore Mapper, obtained on 2017.05.04 from	https://www.ama-assn.org/about-us/health-workforce-mapper  
+Association of Religious Data Archives (2010): *Religious Congregations and Membership Study*, in: U.S. Religion Census (2010), County File, obtained on 2017.05.04 from	http://www.thearda.com/Archive/Files/Descriptions/RCMSCY10.asp  
+Politico (2016): *The Battleground Project*, obtained on 2017.05.14 from http://www.politico.com/2016-election/swing-states  
+Tonmcg (2016): *County-Level Presidential General Election Results for 2012 - 2016*, scraped from townhall.com, otained on 2017.04.05 from	https://github.com/tonmcg/County_Level_Election_Results_12-16  
+U.S. Census Bureau (2010): *Population, Housing Units, Area, and Density*, in: 2010 Census, otained on 2017.04.05 from	https://factfinder.census.gov/faces/tableservices/jsf/pages/productview.xhtml?pid=DEC_10_SF1_GCTPH1.CY07&prodType=table  
+U.S. Census Bureau (2015): *Age and Sex*, in: 2011-2015 American Community Survey 5-Year Estimates, obtained on 2017.05.14 from	https://factfinder.census.gov/faces/tableservices/jsf/pages/productview.xhtml?pid=ACS_15_5YR_S0101&prodType=table  
+U.S. Census Bureau (2015): *Educational Attainment*, in: 2011-2015 American Community Survey 5-Year Estimates, obtained on 2017.05.14 from  https://factfinder.census.gov/faces/tableservices/jsf/pages/productview.xhtml?pid=ACS_15_5YR_S1501&src=pt  
+U.S. Census Bureau (2015): *Hispanic or Latino Origin by Race*, in: 2011-2015 American Community Survey 5-Year Estimates, obtained on 2017.05.14 from	https://factfinder.census.gov/faces/tableservices/jsf/pages/productview.xhtml?pid=ACS_15_5YR_B03002&prodType=table  
+U.S. Census Bureau (2015): *Selected Housing Characteristics*, in: 2011-2015 American Community Survey 5-Year Estimates, obtained on 2017.05.14 from	https://factfinder.census.gov/faces/tableservices/jsf/pages/productview.xhtml?pid=ACS_15_5YR_DP04&prodType=table  
+U.S. Census Bureau (2015): *Selected Economic Characteristics*, in: 2011-2015 American Community Survey 5-Year Estimates, obtained on 2017.05.14 from https://factfinder.census.gov/faces/tableservices/jsf/pages/productview.xhtml?pid=ACS_15_5YR_DP03&src=pt  
+U.S. Census Bureau (2015): *Selected Social Characteristics*, in: 2011-2015 American Community Survey 5-Year Estimates, obtained on 2017.05.14 from https://factfinder.census.gov/faces/tableservices/jsf/pages/productview.xhtml?pid=ACS_15_5YR_DP02&src=pt  
+U.S. Census Bureau (2015): *TIGER Products*, in: MAF/TIGER database, obtained on 2017.05.14 from	https://www.census.gov/geo/maps-data/data/tiger.html  
+
+#####Datajournalism on the 2016 US Presidential Election
+Flowers, A. (2016): *Where Trump Got His Edge*, in: Fivethirtyeight, obtained on 2017.05.14 from https://fivethirtyeight.com/features/where-trump-got-his-edge/  
+Huang J., Jacoby S., Strickland M., Lai R. (2016): *‘Election 2016: Exit Polls’*, in: New York Times, obtained on 2017.05.14 from https://www.nytimes.com/interactive/2016/11/08/us/politics/election-exit-polls.html?_r=0  
+Sabato L., Kondik K., Skelley G. (2016): *The electoral College: The Only Thing That Matters*, in Center for Politics, obtained on 2017.05.14 from http://www.centerforpolitics.org/crystalball/articles/the-only-thing-that-matters/  
+Silver N. (2016): *The Odds Of An Electoral College-Popular Vote Split Are Increasing*, in: Fivethirtyeight, obtained on obtained: 2017.05.14 from https://fivethirtyeight.com/features/the-odds-of-an-electoral-college-popular-vote-split-are-increasing/  
+
+##Code
+######Creating the datafiles
+```{r code creating datafiles, eval=FALSE}
+##Files needed for the models
+#Importing data
+groupwork <- read.csv("regression_data_v4.csv",header = T)
+rownames(groupwork) <- groupwork$FIPS
+county_reg_data <- groupwork[,3:42]
+rownames(county_reg_data) <- groupwork$FIPS
+variables <- read.csv("Variables_v9_raw.csv")
+#Divide data in training and testing data
+set.seed(8888)
+train.index <- createDataPartition(county_reg_data$votes.republicans.per, p=0.8,list=FALSE)
+train <- county_reg_data[train.index,]
+test <- county_reg_data[-train.index,]
+
+##Files needed for Plotting
+#Adding leading zeros to the FIPS code
+gw_plotting <- groupwork
+gw_plotting$FIPS <- formatC(groupwork$FIPS, width = 5, format = "d", flag = "0")
+
+#For technical reasons
+gw_plotting$democrat.vote <- 1-gw_plotting$votes.republicans.per
+
+#Making the demographic data ready for merger with the spatial data
+gw_plotting$county <- tolower(gw_plotting$county)
+colnames(gw_plotting)[1] <- "fips"
+colnames(gw_plotting)[2] <- "county_name"
+gw_plotting$state <- state.abb[match(gw_plotting$state,state.name)]
+
+us.county.map <- readOGR(dsn="Geospatial\ Data", layer = "cb_2015_us_county_500k", verbose = FALSE)
+# convert the GEOID to a character
+us.county.map@data$GEOID<-as.character(us.county.map@data$GEOID)
+us.county.map <- us.county.map[!us.county.map$STATEFP %in% c("02", "15", "72", "66", "78", "60", "69","64", "68", "70", "74", "81", "84", "86", "87", "89", "71", "76", "95", "79"),]
+county_map <- fortify(us.county.map, region="GEOID")
+```
+######Plotting the U.S. maps
+```{r code plotting maps, eval=FALSE}
+#Plot 1: Share of votes for the republican party
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$democrat.vote),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdBu")), name="Republican Votes")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 1: Share of democratic vote") +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+
+#Plot 2: Age over 65 years, one outlier removed
+age_data <- gw_plotting %>% 
+  dplyr::select(fips, age.o65y.per)%>%
+  mutate(age.o65y.per=replace(age.o65y.per, age.o65y.per>=0.4, 0.4)) %>% as.data.frame()
+
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=age_data, map=county_map, aes_string(map_id="fips", fill=age_data$age.o65y.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdPu")), name="Age over 65 years")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  labs(title = "Plot 2: Percentage of population over 65 years old",
+       subtitle = "One outlier removed") +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12),
+        plot.subtitle = element_text(hjust=0.5))
+
+#Plot 3: Number of males per 100 females
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$males.100.females.ratio),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="PuRd")), name="Number of males per 100 females")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 3: Ratio of males per 100 females")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+
+#Plot 4: Race white percentage
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$race.white.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="PiYG")), name="Race White Percentage")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 4: Percentage of white population only")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+         plot.title = element_text(hjust=0.5, size=12))
+
+#Plot 5: Percent of population with highschool degree
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$edu.o25y.high.school.grad.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="YlGnBu")), name="Highschool Degrees Percentage")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 5: Percentage of high school degree holders in US counties") +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+         plot.title = element_text(hjust=0.5, size=12))
+
+#Plot 6: Population density, outliers removed
+pop_den_data <- gw_plotting %>% 
+  dplyr::select(fips, geo.density.population.ratio)%>%
+  mutate(geo.density.population.ratio=replace(geo.density.population.ratio, geo.density.population.ratio>=2500, 2500)) %>% as.data.frame()
+
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=pop_den_data, map=county_map, aes_string(map_id="fips", fill=pop_den_data$geo.density.population.ratio),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdPu")), name="Population Density")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  labs(title = "Plot 6: Population density in US counties",
+       subtitle = "All values above 2500 truncated. Some values reached 60 000, which made the dataset unsuitable for plotting") +
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12),
+        plot.subtitle=element_text(hjust = 0.5))
+
+#Plot 7: Income Median
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$income.median.est),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdPu")), name="Income Median")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 7: Income median in US counties")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+
+#Plot 8: Percentage of population working in natural ressources, construction and maintenance
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$work.occupation.natural.ressources.construction.maintenance.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="RdPu")), name="Percentage of population working in natural ressources, construction and maintenance")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 8: US country population percentage in labor fields")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+
+#Plot 9: Population percentage of major religions
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$rel.population.total.members.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="Reds")), name="Major Religions Members")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 9: Population percentage of major religions")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+
+#Plot 10: Percentage of Latin American immigrants in US countries
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$foreign.born.place.latin.america.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="YlGn")), name="Population born in Latin American countries")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 10: Percentage of Latin American immigrants in US counties")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+
+#Plot 11: Population percentage with health insurance in US counties
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$insurance.with.insurance.per),
+           color="#0e0e0e", size=0.15) +
+  scale_fill_gradientn(colours=c(brewer.pal(n=9, name="YlOrRd")), name="Percentage of population with health insurance")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 11: Population percentage with health insurance in US counties")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+
+#Plot 12: Democratic, republican and swing states
+ggplot() +
+  geom_map(data=county_map, map=county_map,
+           aes(x=long, y=lat, map_id=id, group=group),
+           fill="#ffffff", color="#0e0e0e", size=0.15) +
+  geom_map(data=gw_plotting, map=county_map, aes_string(map_id="fips", fill=gw_plotting$voting.behavior),color="#0e0e0e", size=0.15) +
+  scale_fill_manual(values = c("#ffffff", "#4393c3","#d6604d", "#b8e186"), name="Traditional voting behavior")  +
+  coord_map("polyconic") +
+  theme_bw() +
+  ggtitle("Plot 12: Democratic, republican and swing states")+
+  theme(axis.line=element_blank(),
+        axis.text.x=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks=element_blank(),
+        axis.title.x=element_blank(),
+        axis.title.y=element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank(),
+        legend.title=element_blank(),
+        plot.title = element_text(hjust=0.5, size=12))
+```
+######Relationship between variables and share of votes for Rep. Party
+```{r code scatterplot, eval=FALSE, dpi=300}
+#Put all variables needed in one dataframe
+reg_plot_df <- county_reg_data %>% 
+  dplyr::select(edu.o25y.high.school.grad.per, edu.o25y.bacherlor.or.higher.per, housing.units.vacant.per,race.white.per,race.asian.per,race.black.per, rel.population.total.members.per,work.occupation.natural.ressources.construction.maintenance.per,income.median.est,foreign.born.place.latin.america.per,geo.density.population.ratio, age.o65y.per, votes.republicans.per)%>%
+  filter(geo.density.population.ratio <= 7500 & race.asian.per <= 0.3 & age.o65y.per<=0.4 & edu.o25y.bacherlor.or.higher.per <= 0.7 & rel.population.total.members.per <= 1.4)
+
+#Create long data frame that contains all the information
+reg_plot_df.m<- melt(reg_plot_df,"votes.republicans.per")
+
+#Create shorter labels
+plot_labs <- c(
+                    `edu.o25y.high.school.grad.per` = "High School Degree",
+                    `edu.o25y.bacherlor.or.higher.per` = "Bachelor Degree",
+                    `housing.units.vacant.per` = "Vacant Houses",
+                    `race.white.per` = "Race White",
+                    `race.asian.per` = "Race Asian",
+                    `race.black.per` = "Race Black",
+                    `rel.population.total.members.per` = "Religiosity",
+                    `work.occupation.natural.ressources.construction.maintenance.per` = "Nat. Res. and Const.",
+                    `income.median.est` = "Income Median",
+                    `foreign.born.place.latin.america.per` = "Latin Americans",
+                    `geo.density.population.ratio` = "Population Density",
+                    `age.o65y.per` = "Age over 65 years",
+                    `votes.republicans.per` = "Votes for Rep. Party"
+                    )
+
+#Plot
+ggplot(reg_plot_df.m, aes(value, votes.republicans.per,colour = variable)) + 
+  geom_point(alpha = 0.3) +
+  ylim(0, 1) +
+  geom_smooth(method = "lm",color="black", se = FALSE, size = 0.5) +
+  facet_wrap(~ variable, scales = "free", labeller = as_labeller(plot_labs)) +
+  ggtitle("Plot 13: Relationship between variables and share of votes for Rep. Party") +
+  theme_bw() +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+```
+######Table inlcuding all variables
+```{r code variable table, eval=FALSE}
+knitr::kable(variables, format="html") %>%
+kable_styling(bootstrap_options = c("striped", "hover","responsive"))
+```
+####Models
+###### Full linear regression model
+```{r code full glm, eval=FALSE}
+county.glm <- glm(formula = votes.republicans.per ~ log(total.population.est) + age.o65y.per + log(males.100.females.ratio) + edu.o25y.high.school.grad.per + edu.o25y.bacherlor.or.higher.per + housing.units.vacant.per + race.white.per + race.black.per + race.native.american.per + race.asian.per + race.pacific.per + race.other.per + race.latino.per + rel.population.total.members.per + work.laborforce.civilian.is.unemployed.per + work.occupation.management.business.science.arts.per + work.occupation.service.per +  work.occupation.sales.office.per + work.occupation.natural.ressources.construction.maintenance.per + work.occupation.production.transportation.per + work.class.of.worker.private.per + work.class.of.worker.gov.per + work.class.of.worker.self.employed.per +  log(income.median.est) + income.with.social.security.per + insurance.with.insurance.per + poverty.all.people.per + log(household.average.family.size.est) + disability.is.per + residence.1y.ago.same.county.per + place.of.birth.foreign.per + foreign.born.place.latin.america.per + language.spoken.at.home.english.only.per + log(geo.density.population.ratio) + log(geo.density.housing.ratio) + party.governor + voting.behavior + state, data = train)
+screenreg(county.glm, single.row = TRUE)
+```
+###### Improved linear regression model
+```{r code improved glm, eval=FALSE}
+county.glm.2 <- glm(formula = votes.republicans.per ~ edu.o25y.high.school.grad.per + edu.o25y.bacherlor.or.higher.per + housing.units.vacant.per + race.white.per + race.asian.per + race.black.per + rel.population.total.members.per + work.occupation.natural.ressources.construction.maintenance.per + log(income.median.est) +  foreign.born.place.latin.america.per + log(geo.density.population.ratio) + state, data = train)
+screenreg(county.glm.2, single.row = TRUE)
+```
+###### Regression tree
+```{r code regression tree,eval=FALSE}
+tree.train <- train[,2:40]
+tree.con <- rpart.control(cp = 0.003)
+county.tree <- rpart(votes.republicans.per ~ ., control = tree.con, data = tree.train)
+printcp(county.tree)
+```
+###### Pruned regression tree
+```{r code pruned regression tree, eval=FALSE}
+pruned.county.tree<-prune.rpart(county.tree,cp=0.0051159)
+rpart.plot(pruned.county.tree, uniform=T, box.palette = "Reds")
+```
+###### Predictions against actual value as in one plot
+```{r code predictions in one, eval=FALSE}
+#Prepare the data
+res.plot <- data.frame(matrix(NA,nrow = 2515))
+res.plot$rep.vote <- train$votes.republicans.per
+res.plot$GLM1.pre <- predict(county.glm)
+res.plot$GLM2.pre <- predict(county.glm.2)
+res.plot$RT.pre <- predict(pruned.county.tree)
+res.plot$RF.pre <- predict(county.2.rf)
+res.plot <- res.plot[,2:6]
+
+#create long dataframe
+res.plot.m<- melt(res.plot,"rep.vote")
+
+#variable names
+res.plot.labs <- c(
+  `rep.vote` = "Votes Rep. Party",
+  `GLM1.pre` = "GLM1 Prediction",
+  `GLM2.pre` = "GLM2 Prediction",
+  `RT.pre` = "RT Prediction",
+  `RF.pre` = "RF Prediction"
+)
+
+#plot
+ggplot(res.plot.m, aes(rep.vote, value, colour = variable)) + 
+  geom_point(alpha = 0.4) +
+  geom_smooth(method = "lm",color="black", se = FALSE, size = 0.5) +
+  scale_color_manual(name  ="Model", labels=res.plot.labs, values=c("#ff7f00", "#1f78b4", "#c51b7d", "#7fbc41")) +
+  ylim(0, 1) +
+  ggtitle("Plot 16: Predictions against actual value as in one plot") +
+  theme_bw()
+```
+######Predictions against actual value in separate plots
+```{r code predictions separate, eval=FALSE}
+#variable names
+res.plot.labs <- c(
+  `rep.vote` = "Votes Rep. Party",
+  `GLM1.pre` = "GLM1 Prediction",
+  `GLM2.pre` = "GLM2 Prediction",
+  `RT.pre` = "RT Prediction",
+  `RF.pre` = "RF Prediction"
+)
+#plot
+ggplot(res.plot.m, aes(rep.vote, value, colour = variable)) + 
+  geom_point(alpha = .3) +
+  ylim(0, 1) +
+  geom_smooth(method = "lm",color="black", se = FALSE, size = 0.5) +
+  facet_wrap(~ variable, scales = "free", labeller = as_labeller(res.plot.labs)) +
+  scale_color_manual(name  ="Model", values=c("#ff7f00", "#1f78b4", "#c51b7d", "#7fbc41")) +
+  ggtitle("Plot 17: Predictions against actual value in separate plots") +
+  theme_bw() +
+  theme(legend.position = "none")
+```
+###### Random forest and variable importance plot
+```{r code rf, eval=FALSE}
+county.2.rf <- randomForest(train$votes.republicans.per~.,data = train)
+print(county.2.rf)
+importance(county.2.rf)
+varImpPlot(county.2.rf, main = "Variables Importance Plot", pch = 20)
+```
+###### Mean difference between predicted value and actual election outcome and R-squared
+```{r code rf diagnositics, eval=FALSE}
+test.rf.resp <- predict(county.2.rf,newdata = test[,-38],type = "response")
+comparison <-  data.frame(Republican.Vote = test$votes.republicans.per, Fitted.Republican.Vote = test.rf.resp, Prediction.Error = test$votes.republicans.per-test.rf.resp, R.squared = cor(test.rf.resp,test[,38])^2)
+mean(abs(comparison$Prediction.Error))
+mean(comparison$R.squared)
+```
+###### Largest 10 prediction errors
+```{r code largest prediction errors, eval=FALSE}
+comparison.sort <- comparison[order(-abs(comparison$Prediction.Error)),]
+head(comparison.sort,10)
+```
