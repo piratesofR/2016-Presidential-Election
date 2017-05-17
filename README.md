@@ -7,6 +7,8 @@ population holding bachelor’s degrees, larger share of white population and mo
 the share of votes for the Republican Party. Based on the models’ R-squared, we found that the results from the second linear 
 regression model and the random forest are valid, while the outcome from the first regression model and the regression tree is not.
 
+The goal of this github page is to make our research reproducible. Please feel free to play with the data and the models and suggest improvements! To import the data and the report into R, please follow these steps:
+
 1. The files "regression_data_v4.csv", "Variables_v9_raw.csv", the folder "Geospatial Data" and the markdown document need to be in the same folder
 3. Set the working directory in R to that folder
 4. Install packages "knitr" and "rmarkdown", as well as dependencies
