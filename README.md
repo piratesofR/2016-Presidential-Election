@@ -14,3 +14,5 @@ regression model and the random forest are valid, while the outcome from the fir
 6. Run the model.  
 
 If you have any questions, add our wechat accounts! You find us in the class wechat group
+
+Introduction to rmarkdown: http://rstudio-pubs-static.s3.amazonaws.com/202429_acbbe794b27f4dffaac6047d1b6d5aa0.html
